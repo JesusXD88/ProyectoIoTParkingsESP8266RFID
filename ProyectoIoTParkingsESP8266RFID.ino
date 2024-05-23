@@ -2,35 +2,104 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 #include "arduino_secrets.h"
 
 #define SS_PIN D8  // Pin del RC522 conectado al ESP8266
 #define RST_PIN D1 // Pin de reset del RC522
 
+// Definicion de endpoints
+const String com_request_endpoint = "/card";
+
 MFRC522 mfrc522(SS_PIN, RST_PIN);
+WiFiClient wifiClient;
 
 void setup() {
   Serial.begin(115200);
   SPI.begin();       // Iniciar SPI bus
   mfrc522.PCD_Init(); // Iniciar MFRC522
 
-  WiFi.begin(SECRET_SSID, SECRET_PASS);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Conectando a la red WiFi...");
-  }
-  Serial.println("Conectado a la red WiFi: " + String(SECRET_SSID));
+  connectWiFi();
 
   Serial.println("Esperando a que se acerque una tarjeta...");
 }
 
 void loop() {
-  // Revisar si hay una nueva tarjeta presente
-  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
-    delay(50);
-    return;
+
+  // Conectar a WiFi si no esta conectado
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
   }
 
+  // Revisar si hay una nueva tarjeta presente
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    // Leer el UID de la tarjeta
+    String uid = getUID();
+    Serial.println("UID de la tarjeta: " + uid);
+
+    // Realizar peticion para recibir comandos remotos
+    while (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        String requestUrl = String(SECRET_BACKEND_URL) + com_request_endpoint + "?uid=" + uid;
+        http.begin(wifiClient, requestUrl);
+        int httpCode = http.GET();
+
+        if (httpCode > 0) {
+          String payload = http.getString();
+          Serial.println("Respuesta del servidor: " + payload);
+
+          if (payload == "ACCESS_GRANTED") {
+            digitalWrite(D1, HIGH);
+            delay(2000);
+            digitalWrite(D1, LOW);
+          } else if (payload == "CHANGE_KEY") {
+            MFRC522::MIFARE_Key newKey;
+            byte newKeyData[] = SECRET_RFID_KEY;
+            memcpy(newKey.keyByte, newKeyData, 6);
+            changeKey(1, &newKey);
+            digitalWrite(D1, HIGH);
+            delay(2000);
+            digitalWrite(D1, LOW);
+          } else {
+            digitalWrite(D2, HIGH);
+            delay(2000);
+            digitalWrite(D2, LOW);
+          }
+        } else {
+          Serial.println("Error en la solicitud HTTP: " + String(httpCode));
+        }
+        http.end();
+      } else {
+        Serial.println("WiFi no está conectado");
+      }
+      delay(1000); // Esperar un segundo antes de enviar la próxima solicitud
+    }
+
+    // Detener la comunicación con la tarjeta
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+  }
+
+}
+
+void connectWiFi() {
+  WiFi.begin(SECRET_SSID, SECRET_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Conectando a WiFi...");
+  }
+  Serial.println("Conectado a WiFi");
+}
+
+String getUID() {
+  String uid = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    uid += String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
+    uid += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  uid.toUpperCase();
+  return uid;
 }
 
 void changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
