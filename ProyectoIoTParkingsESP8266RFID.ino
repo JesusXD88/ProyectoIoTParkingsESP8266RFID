@@ -2,17 +2,25 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
 #include <ESP8266HTTPClient.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
 #include "arduino_secrets.h"
 
-#define SS_PIN D8  // Pin del RC522 conectado al ESP8266
-#define RST_PIN D1 // Pin de reset del RC522
+// Definicion de pines
+#define SS_PIN    D8  // Pin del RC522 conectado al ESP8266
+#define RST_PIN   D1 // Pin de reset del RC522
+#define GREEN_LED D3
+#define RED_LED   D4
 
 // Definicion de endpoints
-const String com_request_endpoint = "/card";
+const String auth_request_endpoint = "/auth";
+const String burn_card_ws_endpoint = "/ws";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-WiFiClient wifiClient;
+WiFiClientSecure wifiClient;
+WebSocketsClient webSocket;
 
 void setup() {
   Serial.begin(115200);
@@ -21,59 +29,45 @@ void setup() {
 
   connectWiFi();
 
+  connectToWebSocket();
+
   Serial.println("Esperando a que se acerque una tarjeta...");
 }
 
 void loop() {
 
+  webSocket.loop();
+
   // Conectar a WiFi si no esta conectado
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
+    connectToWebSocket();
   }
 
-  // Revisar si hay una nueva tarjeta presente
+  // Autenticar la tarjeta si hay una tarjeta presente
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
     // Leer el UID de la tarjeta
     String uid = getUID();
     Serial.println("UID de la tarjeta: " + uid);
 
-    // Realizar peticion para recibir comandos remotos
-    while (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-      if (WiFi.status() == WL_CONNECTED) {
-        HTTPClient http;
-        String requestUrl = String(SECRET_BACKEND_URL) + com_request_endpoint + "?uid=" + uid;
-        http.begin(wifiClient, requestUrl);
-        int httpCode = http.GET();
+    bool auth = authenticateCard(uid);
 
-        if (httpCode > 0) {
-          String payload = http.getString();
-          Serial.println("Respuesta del servidor: " + payload);
+    if (auth) {
+      digitalWrite(GREEN_LED, HIGH);
+      Serial.println("Acceso concedido!");
+      //openBarrier();
+      delay(5000);
+      digitalWrite(GREEN_LED, LOW);
+    } else {
+      digitalWrite(RED_LED, HIGH);
+      Serial.println("Acceso denegado!");
+      delay(5000);
+      digitalWrite(RED_LED, LOW);
+    }
 
-          if (payload == "ACCESS_GRANTED") {
-            digitalWrite(D1, HIGH);
-            delay(2000);
-            digitalWrite(D1, LOW);
-          } else if (payload == "CHANGE_KEY") {
-            MFRC522::MIFARE_Key newKey;
-            byte newKeyData[] = SECRET_RFID_KEY;
-            memcpy(newKey.keyByte, newKeyData, 6);
-            changeKey(1, &newKey);
-            digitalWrite(D1, HIGH);
-            delay(2000);
-            digitalWrite(D1, LOW);
-          } else {
-            digitalWrite(D2, HIGH);
-            delay(2000);
-            digitalWrite(D2, LOW);
-          }
-        } else {
-          Serial.println("Error en la solicitud HTTP: " + String(httpCode));
-        }
-        http.end();
-      } else {
-        Serial.println("WiFi no está conectado");
-      }
-      delay(1000); // Esperar un segundo antes de enviar la próxima solicitud
+    // Esperar a que la tarjeta se retire
+    while(mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      delay(500);
     }
 
     // Detener la comunicación con la tarjeta
@@ -92,6 +86,12 @@ void connectWiFi() {
   Serial.println("Conectado a WiFi");
 }
 
+void connectToWebSocket() {
+  webSocket.begin(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, burn_card_ws_endpoint);
+  webSocket.onEvent(webSocketEvent); // Funcion a ejecutar al recibir un evento
+  webSocket.setReconnectInterval(5000); // Reintentar cada 5 segundos si la conexion falla
+}
+
 String getUID() {
   String uid = "";
   for (byte i = 0; i < mfrc522.uid.size; i++) {
@@ -102,7 +102,68 @@ String getUID() {
   return uid;
 }
 
-void changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
+bool authenticateCard(String uid) {
+  HTTPClient http;
+  JsonDocument doc;
+  bool auth = false;
+  wifiClient.setInsecure();
+  String request = String("https://") + String("SECRET_BACKEND_IP") + auth_request_endpoint+ "?uid=" + uid;
+  http.begin(wifiClient, request);
+  int response = http.GET();
+
+  if (response > 0) {
+    String payload = http.getString();
+    Serial.println("Respuesta del servidor: " + payload);
+    deserializeJson(doc, payload);
+    auth = doc["auth"];
+  } else {
+    Serial.println("Error en la solicitud HTTPS: " + String(response));
+  }
+  http.end();
+  return auth;
+}
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+    case WStype_DISCONNECTED:
+      Serial.println("WebSocket desconectado");
+      break;
+    case WStype_CONNECTED:
+      Serial.println("WebSocket conectado");
+      break;
+    case WStype_BIN:
+      Serial.println("Binario recibido");
+      break;
+    case WStype_TEXT:
+      Serial.printf("Mensaje recibido: %s\n", payload);
+      String action = String((char *) payload);
+
+      if (action == "BURN_CARD") {
+        DynamicJsonDocument doc(200);
+        MFRC522::MIFARE_Key key;
+        byte keyData[] = SECRET_RFID_KEY;
+        memcpy(key.keyByte, keyData, 6);
+        bool status = changeKey(1, &key);
+        doc["burnSuccessful"] = status;
+        if (status) {
+          digitalWrite(GREEN_LED, HIGH);
+          String uid = getUID();
+          doc["uid"] = uid;
+          delay(500);
+          digitalWrite(GREEN_LED, LOW);
+        } else {
+          digitalWrite(RED_LED, HIGH);
+          delay(500);
+          digitalWrite(RED_LED, LOW);
+        }
+        String message;
+        serializeJson(doc, message);
+        webSocket.sendTXT(message);
+      }
+  }
+}
+
+bool changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
   MFRC522::StatusCode status;
   byte trailerBlock = sector * 4 + 3;
   MFRC522::MIFARE_Key key;
@@ -113,7 +174,7 @@ void changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
   if (status != MFRC522::STATUS_OK) {
     Serial.print("Autenticación fallida: ");
     Serial.println(mfrc522.GetStatusCodeName(status));
-    return;
+    return false;
   }
 
   // Leer el bloque de tráiler
@@ -123,7 +184,7 @@ void changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
   if (status != MFRC522::STATUS_OK) {
     Serial.print("Lectura del bloque de tráiler fallida: ");
     Serial.println(mfrc522.GetStatusCodeName(status));
-    return;
+    return false ;
   }
 
   // Cambiar las claves de acceso
@@ -135,8 +196,10 @@ void changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
   if (status != MFRC522::STATUS_OK) {
     Serial.print("Escritura del bloque de tráiler fallida: ");
     Serial.println(mfrc522.GetStatusCodeName(status));
-    return;
+    return false;
   }
   Serial.println("Clave cambiada exitosamente");
+
+  return true;
 }
 
