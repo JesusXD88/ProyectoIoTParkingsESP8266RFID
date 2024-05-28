@@ -15,8 +15,12 @@
 #define RED_LED   D4
 
 // Definicion de endpoints
-const String auth_request_endpoint = "/auth";
+const String auth_request_endpoint = "/authcard";
 const String burn_card_ws_endpoint = "/ws";
+const String get_jwt_token_endpoint = "/token";
+
+// Declaración e inicialización del JWT
+String jwt_token = "";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 WiFiClientSecure wifiClient;
@@ -28,7 +32,7 @@ void setup() {
   mfrc522.PCD_Init(); // Iniciar MFRC522
 
   connectWiFi();
-
+  obtainJWT();
   connectToWebSocket();
 
   Serial.println("Esperando a que se acerque una tarjeta...");
@@ -41,6 +45,7 @@ void loop() {
   // Conectar a WiFi si no esta conectado
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
+    obtainJWT();
     connectToWebSocket();
   }
 
@@ -86,10 +91,34 @@ void connectWiFi() {
   Serial.println("Conectado a WiFi");
 }
 
+void obtainJWT() {
+  HTTPClient http;
+  wifiClient.setInsecure();
+  http.begin(wifiClient, "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
+  Serial.println("http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  String postData = "username=" + String(SECRET_API_USER) + "&password=" + String(SECRET_API_PASS);
+  int response = http.POST(postData);
+
+  if (response > 0 ) {
+    String payload = http.getString();
+    Serial.println("Respuesta del servidor: " + payload);
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, payload);
+    jwt_token = doc["access_token"].as<String>();
+  } else {
+    Serial.println("Error en la solicitud HTTPS: " + String(response));
+    Serial.println(http.getString());
+  }
+  http.end();
+}
+
 void connectToWebSocket() {
   webSocket.begin(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, burn_card_ws_endpoint);
   webSocket.onEvent(webSocketEvent); // Funcion a ejecutar al recibir un evento
-  webSocket.setReconnectInterval(5000); // Reintentar cada 5 segundos si la conexion falla
+  webSocket.setReconnectInterval(5000); // Reintentar cada 5 segundos si la conexion 
+  String authHeader = "Bearer " + jwt_token;
+  webSocket.setAuthorization(authHeader.c_str()); // Agregar el token al header de autenticacion
 }
 
 String getUID() {
@@ -107,8 +136,9 @@ bool authenticateCard(String uid) {
   JsonDocument doc;
   bool auth = false;
   wifiClient.setInsecure();
-  String request = String("https://") + String("SECRET_BACKEND_IP") + auth_request_endpoint+ "?uid=" + uid;
+  String request = "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + auth_request_endpoint + "?uid=" + uid;
   http.begin(wifiClient, request);
+  http.addHeader("Authorization", "Bearer " + jwt_token);
   int response = http.GET();
 
   if (response > 0) {
