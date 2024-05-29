@@ -2,7 +2,8 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
-#include <WiFiClientSecure.h>
+//#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <ESP8266HTTPClient.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
@@ -23,7 +24,8 @@ const String get_jwt_token_endpoint = "/token";
 String jwt_token = "";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-WiFiClientSecure wifiClient;
+//WiFiClientSecure wifiClient;
+WiFiClient wifiClient;
 WebSocketsClient webSocket;
 
 void setup() {
@@ -93,7 +95,7 @@ void connectWiFi() {
 
 void obtainJWT() {
   HTTPClient http;
-  wifiClient.setInsecure();
+  //wifiClient.setInsecure();
   http.begin(wifiClient, "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
   Serial.println("http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -114,11 +116,10 @@ void obtainJWT() {
 }
 
 void connectToWebSocket() {
-  webSocket.begin(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, burn_card_ws_endpoint);
+  String wsURL = burn_card_ws_endpoint + "?token=" + jwt_token;
+  webSocket.begin(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, wsURL.c_str());
   webSocket.onEvent(webSocketEvent); // Funcion a ejecutar al recibir un evento
   webSocket.setReconnectInterval(5000); // Reintentar cada 5 segundos si la conexion 
-  String authHeader = "Bearer " + jwt_token;
-  webSocket.setAuthorization(authHeader.c_str()); // Agregar el token al header de autenticacion
 }
 
 String getUID() {
@@ -135,7 +136,7 @@ bool authenticateCard(String uid) {
   HTTPClient http;
   JsonDocument doc;
   bool auth = false;
-  wifiClient.setInsecure();
+  //wifiClient.setInsecure();
   String request = "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + auth_request_endpoint + "?uid=" + uid;
   http.begin(wifiClient, request);
   http.addHeader("Authorization", "Bearer " + jwt_token);
@@ -169,6 +170,7 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
       String action = String((char *) payload);
 
       if (action == "BURN_CARD") {
+        Serial.println("Acerca la tarjeta al lector");
         DynamicJsonDocument doc(200);
         MFRC522::MIFARE_Key key;
         byte keyData[] = SECRET_RFID_KEY;
@@ -194,6 +196,11 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
 }
 
 bool changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
+
+  while(!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    delay(100);
+  }
+
   MFRC522::StatusCode status;
   byte trailerBlock = sector * 4 + 3;
   MFRC522::MIFARE_Key key;
