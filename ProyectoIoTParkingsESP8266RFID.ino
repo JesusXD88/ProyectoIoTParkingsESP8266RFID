@@ -2,8 +2,7 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
-//#include <WiFiClientSecure.h>
-#include <WiFiClient.h>
+#include <BearSSLHelpers.h>
 #include <ESP8266HTTPClient.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
@@ -24,14 +23,16 @@ const String get_jwt_token_endpoint = "/token";
 String jwt_token = "";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-//WiFiClientSecure wifiClient;
-WiFiClient wifiClient;
+BearSSL::WiFiClientSecure wifiClient;
+BearSSL::X509List cert(SECRET_ROOT_CA);
 WebSocketsClient webSocket;
 
 void setup() {
   Serial.begin(115200);
   SPI.begin();       // Iniciar SPI bus
   mfrc522.PCD_Init(); // Iniciar MFRC522
+
+  wifiClient.setTrustAnchors(&cert);
 
   connectWiFi();
   obtainJWT();
@@ -95,9 +96,8 @@ void connectWiFi() {
 
 void obtainJWT() {
   HTTPClient http;
-  //wifiClient.setInsecure();
-  http.begin(wifiClient, "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
-  Serial.println("http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
+  http.begin(wifiClient, "https://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
+  Serial.println("https://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
   String postData = "username=" + String(SECRET_API_USER) + "&password=" + String(SECRET_API_PASS);
   int response = http.POST(postData);
@@ -117,7 +117,8 @@ void obtainJWT() {
 
 void connectToWebSocket() {
   String wsURL = burn_card_ws_endpoint + "?token=" + jwt_token;
-  webSocket.begin(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, wsURL.c_str());
+  webSocket.setSSLClientCertKey()
+  webSocket.beginSslWithCA(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, wsURL.c_str(), SECRET_ROOT_CA);
   webSocket.onEvent(webSocketEvent); // Funcion a ejecutar al recibir un evento
   webSocket.setReconnectInterval(5000); // Reintentar cada 5 segundos si la conexion 
 }
@@ -136,8 +137,7 @@ bool authenticateCard(String uid) {
   HTTPClient http;
   JsonDocument doc;
   bool auth = false;
-  //wifiClient.setInsecure();
-  String request = "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + auth_request_endpoint + "?uid=" + uid;
+  String request = "https://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + auth_request_endpoint + "?uid=" + uid;
   http.begin(wifiClient, request);
   http.addHeader("Authorization", "Bearer " + jwt_token);
   int response = http.GET();
