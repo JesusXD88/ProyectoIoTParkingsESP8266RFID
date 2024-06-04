@@ -39,6 +39,14 @@ int open_sec = 10;
 
 void setup() {
   Serial.begin(115200);
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, HIGH);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+
   SPI.begin();       // Iniciar SPI bus
   mfrc522.PCD_Init(); // Iniciar MFRC522
 
@@ -76,12 +84,11 @@ void loop() {
       digitalWrite(GREEN_LED, HIGH);
       Serial.println("Acceso concedido!");
       openBarrier();
-      delay(5000);
       digitalWrite(GREEN_LED, LOW);
     } else {
       digitalWrite(RED_LED, HIGH);
       Serial.println("Acceso denegado!");
-      delay(5000);
+      delay(1000);
       digitalWrite(RED_LED, LOW);
     }
 
@@ -124,6 +131,13 @@ void obtainJWT() {
   } else {
     Serial.println("Error en la solicitud HTTPS: " + String(response));
     Serial.println(http.getString());
+    digitalWrite(RED_LED, HIGH);
+    delay(100);
+    digitalWrite(RED_LED, LOW);
+    delay(700);
+    digitalWrite(RED_LED, HIGH);
+    delay(100);
+    digitalWrite(RED_LED, LOW);
   }
   http.end();
 }
@@ -180,9 +194,31 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
   switch(type) {
     case WStype_DISCONNECTED:
       Serial.println("WebSocket desconectado");
+      digitalWrite(RED_LED, HIGH);
+      delay(100);
+      digitalWrite(RED_LED, LOW);
+      delay(700);
+      digitalWrite(RED_LED, HIGH);
+      delay(100);
+      digitalWrite(RED_LED, LOW);
+      delay(700);
+      digitalWrite(RED_LED, HIGH);
+      delay(100);
+      digitalWrite(RED_LED, LOW);
       break;
     case WStype_CONNECTED:
       Serial.println("WebSocket conectado");
+      digitalWrite(GREEN_LED, HIGH);
+      delay(100);
+      digitalWrite(GREEN_LED, LOW);
+      delay(700);
+      digitalWrite(GREEN_LED, HIGH);
+      delay(100);
+      digitalWrite(GREEN_LED, LOW);
+      delay(700);
+      digitalWrite(GREEN_LED, HIGH);
+      delay(100);
+      digitalWrite(GREEN_LED, LOW);
       break;
     case WStype_BIN:
       Serial.println("Binario recibido");
@@ -203,16 +239,17 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
         byte keyData[] = SECRET_RFID_KEY;
         memcpy(key.keyByte, keyData, 6);
         bool status = changeKey(1, &key);
+        Serial.println("Cambio de llave hecho (bien o mal)");
         doc["burnSuccessful"] = status;
         if (status) {
           digitalWrite(GREEN_LED, HIGH);
           String uid = getUID();
           doc["uid"] = uid;
-          delay(500);
+          delay(5000);
           digitalWrite(GREEN_LED, LOW);
         } else {
           digitalWrite(RED_LED, HIGH);
-          delay(500);
+          delay(5000);
           digitalWrite(RED_LED, LOW);
         }
         String message;
@@ -220,13 +257,14 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
         Serial.println("Mensaje: " + message);
         webSocket.sendTXT(message);
         delay(1000);
-        ESP.restart();
+        return;
       } else if (delimiterIndex != -1) {
         act_str = action.substring(0, delimiterIndex);
         if (act_str == "OPEN_BARRIER") {
           sec_str = action.substring(delimiterIndex + 1);
           open_sec = sec_str.toInt();
           openBarrier();
+          return;
         }
       }
   }
@@ -273,6 +311,10 @@ bool changeKey(byte sector, MFRC522::MIFARE_Key *newKey) {
     return false;
   }
   Serial.println("Clave cambiada exitosamente");
+
+  // Detener la comunicación con la tarjeta
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
 
   return true;
 }
