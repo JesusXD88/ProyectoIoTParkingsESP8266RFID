@@ -2,17 +2,20 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <ESP8266WiFi.h>
+#include <WiFiClient.h>
 #include <BearSSLHelpers.h>
 #include <ESP8266HTTPClient.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
+#include <Servo.h>
 #include "arduino_secrets.h"
 
 // Definicion de pines
 #define SS_PIN    D8  // Pin del RC522 conectado al ESP8266
-#define RST_PIN   D1 // Pin de reset del RC522
-#define GREEN_LED D3
-#define RED_LED   D4
+#define RST_PIN   D1  // Pin de reset del RC522
+#define GREEN_LED D3  // Pin del LED verde
+#define RED_LED   D4  // Pin del LED rojo
+#define SERVO_PIN D0  // Pin del ServoMotor
 
 // Definicion de endpoints
 const String auth_request_endpoint = "/authcard";
@@ -23,20 +26,29 @@ const String get_jwt_token_endpoint = "/token";
 String jwt_token = "";
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-BearSSL::WiFiClientSecure wifiClient;
-BearSSL::X509List cert(SECRET_ROOT_CA);
+WiFiClient wifiClient;
+//BearSSL::WiFiClientSecure wifiClient;
+//BearSSL::X509List cert(SECRET_ROOT_CA);
 WebSocketsClient webSocket;
+
+Servo servoMotor;
+
+// Declaracion e inicializacion del tiempo de apertura
+
+int open_sec = 10;
 
 void setup() {
   Serial.begin(115200);
   SPI.begin();       // Iniciar SPI bus
   mfrc522.PCD_Init(); // Iniciar MFRC522
 
-  wifiClient.setTrustAnchors(&cert);
-
+  //wifiClient.setTrustAnchors(&cert);
+  //wifiClient.setInsecure();
   connectWiFi();
   obtainJWT();
   connectToWebSocket();
+
+  servoMotor.attach(SERVO_PIN);
 
   Serial.println("Esperando a que se acerque una tarjeta...");
 }
@@ -63,7 +75,7 @@ void loop() {
     if (auth) {
       digitalWrite(GREEN_LED, HIGH);
       Serial.println("Acceso concedido!");
-      //openBarrier();
+      openBarrier();
       delay(5000);
       digitalWrite(GREEN_LED, LOW);
     } else {
@@ -96,8 +108,9 @@ void connectWiFi() {
 
 void obtainJWT() {
   HTTPClient http;
-  http.begin(wifiClient, "https://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
-  Serial.println("https://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
+  //wifiClient.setInsecure();
+  http.begin(wifiClient, "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
+  Serial.println("http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + get_jwt_token_endpoint);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
   String postData = "username=" + String(SECRET_API_USER) + "&password=" + String(SECRET_API_PASS);
   int response = http.POST(postData);
@@ -117,8 +130,7 @@ void obtainJWT() {
 
 void connectToWebSocket() {
   String wsURL = burn_card_ws_endpoint + "?token=" + jwt_token;
-  webSocket.setSSLClientCertKey()
-  webSocket.beginSslWithCA(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, wsURL.c_str(), SECRET_ROOT_CA);
+  webSocket.begin(SECRET_BACKEND_IP, SECRET_BACKEND_PORT, wsURL.c_str());
   webSocket.onEvent(webSocketEvent); // Funcion a ejecutar al recibir un evento
   webSocket.setReconnectInterval(5000); // Reintentar cada 5 segundos si la conexion 
 }
@@ -137,7 +149,8 @@ bool authenticateCard(String uid) {
   HTTPClient http;
   JsonDocument doc;
   bool auth = false;
-  String request = "https://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + auth_request_endpoint + "?uid=" + uid;
+  //wifiClient.setInsecure();
+  String request = "http://" + String(SECRET_BACKEND_IP) + ":" + String(SECRET_BACKEND_PORT) + auth_request_endpoint + "?uid=" + uid;
   http.begin(wifiClient, request);
   http.addHeader("Authorization", "Bearer " + jwt_token);
   int response = http.GET();
@@ -147,11 +160,20 @@ bool authenticateCard(String uid) {
     Serial.println("Respuesta del servidor: " + payload);
     deserializeJson(doc, payload);
     auth = doc["auth"];
+    open_sec = doc["barrier_open_sec"];
   } else {
     Serial.println("Error en la solicitud HTTPS: " + String(response));
   }
   http.end();
   return auth;
+}
+
+void openBarrier() {
+  Serial.println("Abriendo barrera");
+  servoMotor.write(0);
+  delay(1000 * open_sec);
+  servoMotor.write(120);
+
 }
 
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
@@ -168,6 +190,11 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     case WStype_TEXT:
       Serial.printf("Mensaje recibido: %s\n", payload);
       String action = String((char *) payload);
+
+      String act_str;
+      String sec_str;
+
+      int delimiterIndex = action.indexOf(':');
 
       if (action == "BURN_CARD") {
         Serial.println("Acerca la tarjeta al lector");
@@ -190,7 +217,17 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
         }
         String message;
         serializeJson(doc, message);
+        Serial.println("Mensaje: " + message);
         webSocket.sendTXT(message);
+        delay(1000);
+        ESP.restart();
+      } else if (delimiterIndex != -1) {
+        act_str = action.substring(0, delimiterIndex);
+        if (act_str == "OPEN_BARRIER") {
+          sec_str = action.substring(delimiterIndex + 1);
+          open_sec = sec_str.toInt();
+          openBarrier();
+        }
       }
   }
 }
