@@ -76,6 +76,7 @@ void setup() {
   connectToWebSocket();
 
   servoMotor.attach(SERVO_PIN);
+  servoMotor.write(108);
 
   Serial.println("Esperando a que se acerque una tarjeta...");
 }
@@ -193,9 +194,9 @@ void sendAuthRequest(String uid) {
 
 void openBarrier() {
   Serial.println("Abriendo barrera");
-  servoMotor.write(0);
+  servoMotor.write(-40);
   delay(1000 * open_sec);
-  servoMotor.write(120);
+  servoMotor.write(108);
 }
 
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
