@@ -1,3 +1,20 @@
+/*
+* Programa ESP8266 para el control de acceso de un parking
+* Diego Jesús Berenguel García
+*
+* Esquema de Pinout:
+*   > Módulo RFID RC522:
+*     * VCC : Vin
+*     * GND : GND
+*     * RST : D1
+*     * SDA : D8
+*   > LEDs:
+*     * LED Verde: D3
+*     * LED Rojo: D4
+*   > ServoMotor:
+*     * Control: D0
+*/
+
 #include <string>
 #include <SPI.h>
 #include <MFRC522.h>
